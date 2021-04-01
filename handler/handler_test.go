@@ -403,8 +403,9 @@ func TestHeaderHandler_BeforeHeaders(t *testing.T) {
 	is := is.New(t)
 
 	fCalled := false
-	f := func(_ http.ResponseWriter, r *http.Request) {
+	f := func(_ http.ResponseWriter, r *http.Request, statusCode int) int {
 		fCalled = true
+		return statusCode
 	}
 	body := []byte("body")
 	h := headerHandler(f, BeforeHeaders, contentHandler(body, "X-Test", "testValue"))
@@ -425,12 +426,14 @@ func TestHeaderHandler_AfterHeaders(t *testing.T) {
 	fCalled := false
 	var headerValue string
 	var bodyContent []byte
-	f := func(w http.ResponseWriter, r *http.Request) {
+	f := func(w http.ResponseWriter, r *http.Request, statusCode int) int {
 		fCalled = true
 		headerValue = w.Header().Get("X-Test")
 		bodyContent = Body(w)
+		return statusCode
 	}
-	h := headerHandler(f, AfterHeaders, contentHandler([]byte("body"), "X-Test", "testValue"))
+	body := []byte("body")
+	h := headerHandler(f, AfterHeaders, contentHandler(body, "X-Test", "testValue"))
 	w := httptest.NewRecorder()
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 
@@ -440,6 +443,8 @@ func TestHeaderHandler_AfterHeaders(t *testing.T) {
 	is.Equal(w.Result().StatusCode, http.StatusOK)
 	is.Equal(headerValue, "testValue")
 	is.True(bodyContent == nil)
+	b, _ := io.ReadAll(w.Result().Body)
+	is.Equal(b, body)
 }
 
 func TestHeaderHandler_AfterHeaders_NoContent(t *testing.T) {
@@ -447,9 +452,10 @@ func TestHeaderHandler_AfterHeaders_NoContent(t *testing.T) {
 
 	fCalled := false
 	var bodyContent []byte
-	f := func(w http.ResponseWriter, r *http.Request) {
+	f := func(w http.ResponseWriter, r *http.Request, statusCode int) int {
 		fCalled = true
 		bodyContent = Body(w)
+		return statusCode
 	}
 	h := headerHandler(f, AfterHeaders, noContentHandler())
 	w := httptest.NewRecorder()
@@ -462,16 +468,44 @@ func TestHeaderHandler_AfterHeaders_NoContent(t *testing.T) {
 	is.True(bodyContent == nil)
 }
 
+func TestHeaderHandler_AfterHeaders_ChangeStatus(t *testing.T) {
+	is := is.New(t)
+
+	fCalled := false
+	var headerValue string
+	var bodyContent []byte
+	f := func(w http.ResponseWriter, r *http.Request, statusCode int) int {
+		fCalled = true
+		headerValue = w.Header().Get("X-Test")
+		bodyContent = Body(w)
+		return http.StatusCreated
+	}
+	body := []byte("body")
+	h := headerHandler(f, AfterHeaders, contentHandler(body, "X-Test", "testValue"))
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+
+	h.ServeHTTP(w, r)
+
+	is.True(fCalled)
+	is.Equal(w.Result().StatusCode, http.StatusCreated)
+	is.Equal(headerValue, "testValue")
+	is.True(bodyContent == nil)
+	b, _ := io.ReadAll(w.Result().Body)
+	is.Equal(b, body)
+}
+
 func TestHeaderHandler_AfterResponse(t *testing.T) {
 	is := is.New(t)
 
 	fCalled := false
 	var headerValue string
 	var bodyContent []byte
-	f := func(w http.ResponseWriter, r *http.Request) {
+	f := func(w http.ResponseWriter, r *http.Request, statusCode int) int {
 		fCalled = true
 		headerValue = w.Header().Get("X-Test")
 		bodyContent = Body(w)
+		return statusCode
 	}
 	body := []byte("body")
 	h := headerHandler(f, AfterResponse, contentHandler(body, "X-Test", "testValue"))
@@ -482,6 +516,33 @@ func TestHeaderHandler_AfterResponse(t *testing.T) {
 
 	is.True(fCalled)
 	is.Equal(w.Result().StatusCode, http.StatusOK)
+	is.Equal(headerValue, "testValue")
+	is.Equal(bodyContent, body)
+	b, _ := io.ReadAll(w.Result().Body)
+	is.Equal(b, body)
+}
+
+func TestHeaderHandler_AfterResponse_ChangeStatus(t *testing.T) {
+	is := is.New(t)
+
+	fCalled := false
+	var headerValue string
+	var bodyContent []byte
+	f := func(w http.ResponseWriter, r *http.Request, statusCode int) int {
+		fCalled = true
+		headerValue = w.Header().Get("X-Test")
+		bodyContent = Body(w)
+		return http.StatusCreated
+	}
+	body := []byte("body")
+	h := headerHandler(f, AfterResponse, contentHandler(body, "X-Test", "testValue"))
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+
+	h.ServeHTTP(w, r)
+
+	is.True(fCalled)
+	is.Equal(w.Result().StatusCode, http.StatusCreated)
 	is.Equal(headerValue, "testValue")
 	is.Equal(bodyContent, body)
 	b, _ := io.ReadAll(w.Result().Body)

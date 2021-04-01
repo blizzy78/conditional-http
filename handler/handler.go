@@ -49,14 +49,18 @@ const (
 )
 
 type responseWriter struct {
-	w            http.ResponseWriter
-	r            *http.Request
-	resBody      *bytes.Buffer
-	afterHeaders func()
-	bufferBody   bool
+	w                 http.ResponseWriter
+	r                 *http.Request
+	statusCode        int
+	bodyBuf           *bytes.Buffer
+	beforeWriteHeader beforeWriteHeaderFunc
+	bufferBody        bool
+	headerWritten     bool
 }
 
-type headerFunc func(http.ResponseWriter, *http.Request)
+type beforeWriteHeaderFunc func(int) int
+
+type headerFunc func(http.ResponseWriter, *http.Request, int) int
 
 // ETagHandler returns a handler that uses f to set the ETag header in responses.
 // If rm is BeforeHeaders, the response passed to f will be nil.
@@ -65,12 +69,13 @@ type headerFunc func(http.ResponseWriter, *http.Request)
 // If f cannot produce an entity-tag (ok result is false), then the ETag header will not be set.
 func ETagHandler(f ETagFunc, rm ResponseMode, next http.Handler) http.Handler {
 	return headerHandler(
-		func(w http.ResponseWriter, r *http.Request) {
+		func(w http.ResponseWriter, r *http.Request, statusCode int) int {
 			e, ok := f(w, r)
 			if !ok {
-				return
+				return statusCode
 			}
 			w.Header().Set("ETag", e.String())
+			return statusCode
 		},
 		rm, next)
 }
@@ -88,12 +93,13 @@ func LastModifiedHandler(f LastModifiedFunc, rm ResponseMode, next http.Handler)
 	}
 
 	return headerHandler(
-		func(w http.ResponseWriter, r *http.Request) {
+		func(w http.ResponseWriter, r *http.Request, statusCode int) int {
 			lm, ok := f(w, r)
 			if !ok {
-				return
+				return statusCode
 			}
 			w.Header().Set("Last-Modified", lm.In(loc).Format(time.RFC1123))
+			return statusCode
 		},
 		rm, next), nil
 }
@@ -108,8 +114,9 @@ func LastModifiedHandlerConstant(t time.Time, next http.Handler) (http.Handler, 
 	ts := t.In(loc).Format(time.RFC1123)
 
 	return headerHandler(
-		func(w http.ResponseWriter, r *http.Request) {
+		func(w http.ResponseWriter, r *http.Request, statusCode int) int {
 			w.Header().Set("Last-Modified", ts)
+			return statusCode
 		},
 		BeforeHeaders, next), nil
 }
@@ -125,96 +132,89 @@ func LastModifiedHandlerConstant(t time.Time, next http.Handler) (http.Handler, 
 // If neither entity-tags nor last modification date checks are successful, the response will not be modified.
 func IfNoneMatchIfModifiedSinceHandler(weakETagComparison bool, next http.Handler) http.Handler {
 	return headerHandler(
-		func(w http.ResponseWriter, r *http.Request) {
-			if tryMatchETag(w, r, weakETagComparison) {
-				return
+		func(w http.ResponseWriter, r *http.Request, statusCode int) int {
+			if statusCode, ok := tryMatchETag(w, r, weakETagComparison, statusCode); ok {
+				return statusCode
 			}
-			tryMatchLastModified(w, r)
+			return tryMatchLastModified(w, r, statusCode)
 		},
 		AfterHeaders, next)
 }
 
-func tryMatchETag(w http.ResponseWriter, r *http.Request, weakETagComparison bool) bool {
+func tryMatchETag(w http.ResponseWriter, r *http.Request, weakETagComparison bool, statusCode int) (int, bool) {
 	inm := r.Header.Get("If-None-Match")
 	if inm == "" {
-		return false
+		return 0, false
 	}
 
 	eTag := w.Header().Get("ETag")
 	if eTag == "" {
-		return true
+		return statusCode, true
 	}
 
 	inmE, ok := eTagFromString(inm)
 	if !ok {
-		return true
+		return statusCode, true
 	}
 
 	e, ok := eTagFromString(eTag)
 	if !ok {
-		return true
+		return statusCode, true
 	}
 
 	if inmE.equal(e, weakETagComparison) {
-		http.Error(w, "Not Modified", http.StatusNotModified)
+		return http.StatusNotModified, true
 	}
 
-	return true
+	return statusCode, true
 }
 
-func tryMatchLastModified(w http.ResponseWriter, r *http.Request) {
+func tryMatchLastModified(w http.ResponseWriter, r *http.Request, statusCode int) int {
 	ims := r.Header.Get("If-Modified-Since")
 	lm := w.Header().Get("Last-Modified")
 	switch {
 	case ims == "", lm == "":
-		return
+		return statusCode
 	case ims == lm:
-		http.Error(w, "Not Modified", http.StatusNotModified)
-		return
+		return http.StatusNotModified
 	}
 
 	imsT, err := time.Parse(time.RFC1123, ims)
 	if err != nil {
-		return
+		return statusCode
 	}
 
 	lmT, err := time.Parse(time.RFC1123, lm)
 	if err != nil {
-		return
+		return statusCode
 	}
 
 	if lmT.Before(imsT) || lmT.Equal(imsT) {
-		http.Error(w, "Not Modified", http.StatusNotModified)
+		return http.StatusNotModified
 	}
+
+	return statusCode
 }
 
 func headerHandler(f headerFunc, rm ResponseMode, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch rm {
 		case BeforeHeaders:
-			f(w, r)
+			f(w, r, 0)
 			next.ServeHTTP(w, r)
 
-		case AfterHeaders:
-			rw := responseWriter{
-				w: w,
-				r: r,
-				afterHeaders: func() {
-					f(w, r)
-				},
-			}
-			next.ServeHTTP(&rw, r)
-			rw.flushResponseBody()
-
-		case AfterResponse:
-			rw := responseWriter{
+		case AfterHeaders, AfterResponse:
+			var rw *responseWriter
+			rw = &responseWriter{
 				w:          w,
 				r:          r,
-				bufferBody: true,
+				bufferBody: rm == AfterResponse,
+				beforeWriteHeader: func(statusCode int) int {
+					return f(rw, r, statusCode)
+				},
 			}
-			next.ServeHTTP(&rw, r)
-			f(&rw, r)
-			rw.flushResponseBody()
+			next.ServeHTTP(rw, r)
+			rw.flush()
 		}
 	})
 }
@@ -226,46 +226,61 @@ func (w *responseWriter) Header() http.Header {
 
 // Header implements http.Handler.
 func (w *responseWriter) Write(b []byte) (int, error) {
-	if w.afterHeaders != nil {
-		defer func() {
-			w.afterHeaders = nil
-		}()
-		w.afterHeaders()
-	}
-
 	if w.bufferBody {
-		if w.resBody == nil {
-			w.resBody = &bytes.Buffer{}
+		if w.bodyBuf == nil {
+			w.bodyBuf = &bytes.Buffer{}
 		}
-		return w.resBody.Write(b)
+		return w.bodyBuf.Write(b)
 	}
 
+	w.writeHeader()
 	return w.w.Write(b)
 }
 
 // Header implements http.Handler.
 func (w *responseWriter) WriteHeader(statusCode int) {
-	w.w.WriteHeader(statusCode)
+	w.statusCode = statusCode
 }
 
-func (w *responseWriter) flushResponseBody() {
-	if w.resBody == nil {
+func (w *responseWriter) flush() {
+	if w.bodyBuf == nil {
 		return
 	}
-	_, err := io.Copy(w.w, w.resBody)
-	if err != nil {
-		http.Error(w.w, "Internal Server Error", http.StatusInternalServerError)
+	w.writeHeader()
+	_, _ = io.Copy(w.w, w.bodyBuf)
+}
+
+func (w *responseWriter) writeHeader() {
+	if w.headerWritten {
+		return
 	}
+
+	statusCode := w.statusCode
+	if statusCode < 100 {
+		statusCode = http.StatusOK
+	}
+
+	if w.beforeWriteHeader != nil {
+		defer func() {
+			w.beforeWriteHeader = nil
+		}()
+		statusCode = w.beforeWriteHeader(statusCode)
+	}
+
+	defer func() {
+		w.headerWritten = true
+	}()
+	w.w.WriteHeader(statusCode)
 }
 
 // Body returns w's body content. If w is a buffering response writer produced by this package,
 // Body will return the buffered body contents if any. In all other cases, it will return nil.
 func Body(w http.ResponseWriter) []byte {
 	rw, ok := w.(*responseWriter)
-	if !ok || rw.resBody == nil {
+	if !ok || rw.bodyBuf == nil {
 		return nil
 	}
-	return rw.resBody.Bytes()
+	return rw.bodyBuf.Bytes()
 }
 
 func eTagFromString(s string) (ETag, bool) {
