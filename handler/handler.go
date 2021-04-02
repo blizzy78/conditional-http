@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// ETag represents an entity-tag as specified by RFC 7232, section 2.
+// ETag represents a resource's entity-tag, as specified by RFC 7232, section 2.
 type ETag struct {
 	// Tag is the entity-tag's opaque-tag. The double-quotes required by RFC 7232 should be omitted.
 	Tag string
@@ -274,7 +274,7 @@ func (w *responseWriter) writeHeader() {
 }
 
 // Body returns w's body content. If w is a buffering response writer produced by this package,
-// Body will return the buffered body contents if any. In all other cases, it will return nil.
+// Body returns the buffered body contents if any. In all other cases, it returns nil.
 func Body(w http.ResponseWriter) []byte {
 	rw, ok := w.(*responseWriter)
 	if !ok || rw.bodyBuf == nil {
@@ -300,7 +300,8 @@ func eTagFromString(s string) (ETag, bool) {
 	}, true
 }
 
-// String implements fmt.Stringer.
+// String implements fmt.Stringer, and returns e's representation usable for the HTTP ETag header,
+// as specified by RFC 7232, section 2.3.
 func (e ETag) String() string {
 	s := e.Tag
 	if !strings.HasPrefix(s, `"`) && !strings.HasSuffix(s, `"`) {

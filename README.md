@@ -1,7 +1,7 @@
 [![Build Status](https://travis-ci.org/blizzy78/conditional-http.svg?branch=master)](https://travis-ci.org/blizzy78/conditional-http) [![Coverage Status](https://coveralls.io/repos/github/blizzy78/conditional-http/badge.svg?branch=master)](https://coveralls.io/github/blizzy78/conditional-http?branch=master) [![GoDoc](https://pkg.go.dev/badge/github.com/blizzy78/conditional-http)](https://pkg.go.dev/github.com/blizzy78/conditional-http)
 
 
-Conditional HTTP middleware for Go
+Conditional HTTP Middleware for Go
 ==================================
 
 This package for Go provides middleware for conditional HTTP requests supporting the ETag, Last-Modified,
