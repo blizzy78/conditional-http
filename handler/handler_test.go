@@ -315,6 +315,25 @@ func TestIfNoneMatchIfModifiedSinceHandler_IfNoneMatch_ResponseParseError(t *tes
 	is.Equal(w.Result().StatusCode, http.StatusOK)
 }
 
+func TestIfNoneMatchIfModifiedSinceHandler_IfNoneMatchPrecedence(t *testing.T) {
+	is := is.New(t)
+
+	eTag := ETag{
+		Tag: "foo",
+	}
+	now := time.Now()
+	loc, _ := time.LoadLocation("GMT")
+	h := IfNoneMatchIfModifiedSinceHandler(true, contentHandler([]byte{}, "ETag", eTag.String(), "Last-Modified", now.In(loc).Format(time.RFC1123)))
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("If-None-Match", eTag.String())
+	r.Header.Set("If-Modified-Since", now.Add(-10*time.Minute).In(loc).Format(time.RFC1123))
+
+	h.ServeHTTP(w, r)
+
+	is.Equal(w.Result().StatusCode, http.StatusNotModified)
+}
+
 func TestIfNoneMatchIfModifiedSinceHandler_IfModifiedSince(t *testing.T) {
 	lastModifiedTime := time.Now()
 
